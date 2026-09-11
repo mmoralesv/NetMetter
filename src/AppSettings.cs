@@ -1,8 +1,15 @@
-using System.IO;
 using System.Text.Json;
-using Microsoft.Win32;
+using System.Text.Json.Serialization;
 
 namespace NetMetter;
+
+internal enum DisplayMode
+{
+    /// <summary>A readout drawn on top of the taskbar, next to the notification area.</summary>
+    Taskbar,
+    /// <summary>A small always-on-top window the user can place anywhere.</summary>
+    Floating,
+}
 
 internal enum AnchorSide
 {
@@ -19,13 +26,25 @@ internal sealed class AppSettings
     private static readonly string FilePath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "NetMetter", "settings.json");
 
-    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        WriteIndented = true,
+        Converters = { new JsonStringEnumConverter() },
+    };
 
+    /// <summary>False until the user has confirmed the welcome dialog (their consent to the overlay).</summary>
+    public bool FirstRunCompleted { get; set; }
+    public DisplayMode Mode { get; set; } = DisplayMode.Taskbar;
     public bool ShowNames { get; set; } = true;
     public bool UseBits { get; set; }
     public int IntervalMs { get; set; } = 1000;
+
     public AnchorSide Anchor { get; set; } = AnchorSide.Auto;
     public int AnchorOffset { get; set; }
+
+    /// <summary>Top-left of the floating window in screen pixels; null until the user moves it.</summary>
+    public int? FloatingLeft { get; set; }
+    public int? FloatingTop { get; set; }
 
     /// <summary>
     /// Per-interface overrides keyed by adapter id. Interfaces not listed here fall back to the
@@ -45,7 +64,7 @@ internal sealed class AppSettings
         }
         catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
         {
-            // Corrupt or unreadable settings: start over with defaults.
+            AppLog.Error("Loading settings; starting with defaults", ex);
         }
         return new();
     }
@@ -59,27 +78,7 @@ internal sealed class AppSettings
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Not fatal; settings just won't persist.
-        }
-    }
-
-    private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    private const string RunValue = "NetMetter";
-
-    public static bool StartWithWindows
-    {
-        get
-        {
-            using var key = Registry.CurrentUser.OpenSubKey(RunKey);
-            return key?.GetValue(RunValue) is string;
-        }
-        set
-        {
-            using var key = Registry.CurrentUser.CreateSubKey(RunKey);
-            if (value)
-                key.SetValue(RunValue, $"\"{Environment.ProcessPath}\"");
-            else
-                key.DeleteValue(RunValue, throwOnMissingValue: false);
+            AppLog.Error("Saving settings", ex);
         }
     }
 }

@@ -174,4 +174,9 @@ internal static class NativeMethods
 
     [DllImport("shell32.dll")]
     public static extern UIntPtr SHAppBarMessage(uint dwMessage, ref APPBARDATA pData);
+
+    public const int APPMODEL_ERROR_NO_PACKAGE = 15700;
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetCurrentPackageFullName(ref uint packageFullNameLength, StringBuilder? packageFullName);
 }

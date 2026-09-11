@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Template: build/Package.ps1 substitutes the {Tokens} and writes one copy per architecture.
+  Identity values come from Partner Center › Product management › Product identity.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap desktop rescap">
+
+  <Identity
+    Name="{IdentityName}"
+    Publisher="{Publisher}"
+    Version="{Version}"
+    ProcessorArchitecture="{Architecture}" />
+
+  <Properties>
+    <DisplayName>NetMetter</DisplayName>
+    <PublisherDisplayName>{PublisherDisplayName}</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="NetMetter" Executable="NetMetter.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="NetMetter"
+        Description="Live upload and download speed for each network interface, on the taskbar."
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+      </uap:VisualElements>
+      <Extensions>
+        <!-- TaskId must match StartupRegistration.TaskId. Enabled="false": the user opts in. -->
+        <desktop:Extension Category="windows.startupTask" Executable="NetMetter.exe" EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask TaskId="NetMetterStartup" Enabled="false" DisplayName="NetMetter" />
+        </desktop:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!-- Required for any packaged Win32 app. Justify it on the Submission options page in Partner Center. -->
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+
+</Package>

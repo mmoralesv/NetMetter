@@ -9,11 +9,12 @@ using static NetMetter.NativeMethods;
 namespace NetMetter;
 
 /// <summary>
-/// A borderless, click-through-looking window that sits on top of the taskbar and draws one
-/// column per network interface. Windows 11 dropped support for taskbar "desk bands", so the
-/// widget is a top-most layered window that tracks the taskbar's position instead.
+/// The readout: a borderless, top-most layered window drawing one column per network interface.
+/// In <see cref="DisplayMode.Taskbar"/> it tracks the taskbar's position and paints straight onto
+/// it (Windows 11 dropped support for taskbar "desk bands", so an overlay is the only way); in
+/// <see cref="DisplayMode.Floating"/> it is a small panel the user can put anywhere.
 /// </summary>
-internal sealed class TaskbarWidget : Form
+internal sealed class MeterWindow : Form
 {
     private const string FontFamilyName = "Segoe UI";
     private const string NameFontFamilyName = "Segoe UI Semibold";
@@ -25,7 +26,6 @@ internal sealed class TaskbarWidget : Form
     private readonly IntPtr _foregroundHook;
     private readonly StringFormat _leftFormat;
     private readonly StringFormat _rightFormat;
-    private readonly TaskbarObstacles _obstacles = new();
 
     private IReadOnlyList<InterfaceStat> _items = [];
     private TaskbarInfo? _taskbar;
@@ -37,12 +37,12 @@ internal sealed class TaskbarWidget : Form
     private float _fontPx;
 
     private bool _dragging;
-    private int _dragStartCursor, _dragStartPos, _dragPos;
+    private Point _dragStartCursor, _dragStartPosition, _dragPosition;
 
-    /// <summary>Raised when the user finishes dragging the widget to a new spot.</summary>
+    /// <summary>Raised when the user finishes dragging the meter to a new spot.</summary>
     public event EventHandler? PositionChanged;
 
-    public TaskbarWidget(AppSettings settings)
+    public MeterWindow(AppSettings settings)
     {
         _settings = settings;
         FormBorderStyle = FormBorderStyle.None;
@@ -66,12 +66,6 @@ internal sealed class TaskbarWidget : Form
         _foregroundChangedProc = (_, _, _, _, _, _, _) => Render();
         _foregroundHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
             IntPtr.Zero, _foregroundChangedProc, 0, 0, WINEVENT_OUTOFCONTEXT);
-
-        _obstacles.Changed += (_, _) =>
-        {
-            if (IsHandleCreated && !IsDisposed)
-                BeginInvoke(Render);
-        };
     }
 
     protected override CreateParams CreateParams
@@ -86,17 +80,21 @@ internal sealed class TaskbarWidget : Form
 
     protected override bool ShowWithoutActivation => true;
 
+    private bool Floating => _settings.Mode == DisplayMode.Floating;
+
     public void UpdateItems(IReadOnlyList<InterfaceStat> items)
     {
         _items = items;
         Render();
     }
 
-    /// <summary>Forgets any dragged position and goes back to sitting next to the tray.</summary>
+    /// <summary>Forgets the dragged position: back next to the tray, or to the default corner.</summary>
     public void ResetPosition()
     {
         _settings.Anchor = AnchorSide.Auto;
         _settings.AnchorOffset = 0;
+        _settings.FloatingLeft = null;
+        _settings.FloatingTop = null;
         Render();
     }
 
@@ -105,10 +103,8 @@ internal sealed class TaskbarWidget : Form
         if (IsDisposed)
             return;
 
-        _obstacles.Enabled = _settings.Anchor == AnchorSide.Auto;
-        var tb = TaskbarInfo.Query();
-        _taskbar = tb;
-        if (tb is null || !tb.IsShown || tb.IsFullscreenAppActive(Handle))
+        _taskbar = TaskbarInfo.Query();
+        if (!ShouldBeVisible())
         {
             if (Visible)
                 Hide();
@@ -120,9 +116,9 @@ internal sealed class TaskbarWidget : Form
         if (!Visible)
             Show();
 
-        var layout = ComputeLayout(tb);
+        var layout = Floating ? ComputeFloatingLayout() : ComputeTaskbarLayout(_taskbar!);
         _size = layout.Size;
-        _position = ComputePosition(tb, _size);
+        _position = Floating ? FloatingPosition(_size) : TaskbarPosition(_taskbar!, _size);
         PaintLayered(layout);
 
         SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
@@ -131,23 +127,42 @@ internal sealed class TaskbarWidget : Form
             RefreshToolTip();
     }
 
+    private bool ShouldBeVisible()
+    {
+        if (Floating)
+        {
+            var monitor = Screen.FromPoint(_position).Bounds;
+            return !TaskbarInfo.IsFullscreenAppActive(Handle, monitor);
+        }
+        return _taskbar is { IsShown: true } tb && !tb.IsFullscreenAppActive(Handle);
+    }
+
     // ---------------------------------------------------------------- layout
 
-    private readonly record struct WidgetLayout(Size Size, int Lines, float LineHeight, float ColumnWidth,
-        IReadOnlyList<PointF> Origins);
+    private readonly record struct MeterLayout(Size Size, int Lines, float LineHeight, float ColumnWidth,
+        float Scale, IReadOnlyList<PointF> Origins);
 
-    private WidgetLayout ComputeLayout(TaskbarInfo tb)
+    private MeterLayout ComputeTaskbarLayout(TaskbarInfo tb) =>
+        ComputeLayout(tb.IsHorizontal, tb.Thickness, tb.Scale);
+
+    /// <summary>The floating panel is as tall as a default taskbar, scaled for its monitor.</summary>
+    private MeterLayout ComputeFloatingLayout()
+    {
+        float scale = DeviceDpi / 96f;
+        return ComputeLayout(horizontal: true, thickness: MathF.Round(46 * scale), scale);
+    }
+
+    private MeterLayout ComputeLayout(bool horizontal, float thickness, float scale)
     {
         string sample = SpeedFormatter.WidestSample(_settings.UseBits);
         int lines = _settings.ShowNames ? 3 : 2;
-        float thickness = tb.Thickness;
-        float maxFont = 12f * tb.Scale;
+        float maxFont = 12f * scale;
 
         float fontPx;
-        if (tb.IsHorizontal)
+        if (horizontal)
         {
             fontPx = Math.Min(thickness * 0.86f / lines / 1.25f, maxFont);
-            if (lines == 3 && fontPx < 8f * tb.Scale)
+            if (lines == 3 && fontPx < 8f * scale)
             {
                 // Small-icon taskbars are too short for three lines; names stay in the tooltip.
                 lines = 2;
@@ -173,9 +188,9 @@ internal sealed class TaskbarWidget : Form
         var origins = new List<PointF>(count);
         Size size;
 
-        if (tb.IsHorizontal)
+        if (horizontal)
         {
-            float pad = fontPx * 0.6f, gap = fontPx * 1.1f;
+            float pad = fontPx * (Floating ? 1.0f : 0.6f), gap = fontPx * 1.1f;
             float top = (thickness - blockHeight) / 2f;
             for (int i = 0; i < count; i++)
                 origins.Add(new PointF(pad + i * (columnWidth + gap), top));
@@ -190,7 +205,7 @@ internal sealed class TaskbarWidget : Form
             size = new Size((int)thickness, (int)MathF.Ceiling(2 * pad + count * blockHeight + (count - 1) * gap));
         }
 
-        return new WidgetLayout(size, lines, lineHeight, columnWidth, origins);
+        return new MeterLayout(size, lines, lineHeight, columnWidth, scale, origins);
     }
 
     private float MeasureColumnWidth(string sample) =>
@@ -219,8 +234,8 @@ internal sealed class TaskbarWidget : Form
     private static float Measure(string text, Font font) =>
         Measurer.MeasureString(text, font, PointF.Empty, StringFormat.GenericTypographic).Width;
 
-    /// <summary>Where the widget goes along the taskbar, honouring the user's dragged position.</summary>
-    private Point ComputePosition(TaskbarInfo tb, Size size)
+    /// <summary>Where the meter goes along the taskbar, honouring the user's dragged position.</summary>
+    private Point TaskbarPosition(TaskbarInfo tb, Size size)
     {
         int length = tb.IsHorizontal ? size.Width : size.Height;
         int start = tb.IsHorizontal ? tb.Bounds.Left : tb.Bounds.Top;
@@ -228,55 +243,54 @@ internal sealed class TaskbarWidget : Form
 
         int along;
         if (_dragging)
-            along = _dragPos;
+            along = tb.IsHorizontal ? _dragPosition.X : _dragPosition.Y;
         else
             along = _settings.Anchor switch
             {
                 AnchorSide.Near => start + _settings.AnchorOffset,
                 AnchorSide.Far => end - _settings.AnchorOffset - length,
-                _ => DefaultPosition(tb, length),
+                _ => DefaultTaskbarPosition(tb, length),
             };
 
         along = Math.Clamp(along, start, Math.Max(start, end - length));
         return tb.IsHorizontal ? new Point(along, tb.Bounds.Top) : new Point(tb.Bounds.Left, along);
     }
 
-    /// <summary>
-    /// Just before the notification area, slid towards the start of the taskbar until it no longer
-    /// covers any taskbar button. If there's no free gap, it overlaps rather than jumping far away.
-    /// </summary>
-    private int DefaultPosition(TaskbarInfo tb, int length)
+    /// <summary>Just before the notification area, leaving room for the Widgets button if it's there.</summary>
+    private static int DefaultTaskbarPosition(TaskbarInfo tb, int length)
     {
         int margin = (int)(4 * tb.Scale);
-        int start = tb.IsHorizontal ? tb.Bounds.Left : tb.Bounds.Top;
         int limit = tb.NotifyArea is { } n
-            ? (tb.IsHorizontal ? n.Left : n.Top)
+            ? (tb.IsHorizontal ? n.Left : n.Top) - tb.ReservedBeforeNotifyArea
             : (tb.IsHorizontal ? tb.Bounds.Right : tb.Bounds.Bottom) - (int)(200 * tb.Scale);
-        int preferredEnd = limit - margin;
+        return limit - margin - length;
+    }
 
-        int endPos = preferredEnd;
-        bool moved = true;
-        while (moved)
-        {
-            moved = false;
-            foreach (var r in _obstacles.Current)
-            {
-                int a = tb.IsHorizontal ? r.Left : r.Top;
-                int b = tb.IsHorizontal ? r.Right : r.Bottom;
-                if (a < endPos && b > endPos - length)
-                {
-                    endPos = a - margin;
-                    moved = true;
-                }
-            }
-        }
+    private Point FloatingPosition(Size size)
+    {
+        if (_dragging)
+            return ClampToScreen(_dragPosition, size);
 
-        return endPos - length >= start ? endPos - length : preferredEnd - length;
+        if (_settings is { FloatingLeft: { } left, FloatingTop: { } top })
+            return ClampToScreen(new Point(left, top), size);
+
+        // Default: above the notification area, clear of the taskbar.
+        var work = Screen.PrimaryScreen!.WorkingArea;
+        int margin = (int)(12 * (DeviceDpi / 96f));
+        return new Point(work.Right - size.Width - margin, work.Bottom - size.Height - margin);
+    }
+
+    private static Point ClampToScreen(Point position, Size size)
+    {
+        var work = Screen.FromRectangle(new Rectangle(position, size)).WorkingArea;
+        return new Point(
+            Math.Clamp(position.X, work.Left, Math.Max(work.Left, work.Right - size.Width)),
+            Math.Clamp(position.Y, work.Top, Math.Max(work.Top, work.Bottom - size.Height)));
     }
 
     // ---------------------------------------------------------------- painting
 
-    private void PaintLayered(WidgetLayout layout)
+    private void PaintLayered(MeterLayout layout)
     {
         int w = layout.Size.Width, h = layout.Size.Height;
         IntPtr screenDc = GetDC(IntPtr.Zero);
@@ -318,14 +332,17 @@ internal sealed class TaskbarWidget : Form
         }
     }
 
-    private void Draw(Graphics g, WidgetLayout layout)
+    private void Draw(Graphics g, MeterLayout layout)
     {
         // Alpha 1 is invisible but keeps the whole rectangle clickable (alpha 0 is click-through).
         g.Clear(Color.FromArgb(1, 0, 0, 0));
         g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
         g.SmoothingMode = SmoothingMode.AntiAlias;
 
-        var palette = Palette.Current();
+        var palette = Palette.Current(Floating);
+        if (Floating)
+            DrawPanel(g, layout, palette);
+
         using var textBrush = new SolidBrush(palette.Text);
         using var nameBrush = new SolidBrush(palette.Name);
         using var upBrush = new SolidBrush(palette.Up);
@@ -363,40 +380,64 @@ internal sealed class TaskbarWidget : Form
         }
     }
 
+    /// <summary>The floating meter needs its own background; on the taskbar the taskbar is the background.</summary>
+    private static void DrawPanel(Graphics g, MeterLayout layout, Palette palette)
+    {
+        float radius = 8 * layout.Scale;
+        var bounds = new RectangleF(0.5f, 0.5f, layout.Size.Width - 1, layout.Size.Height - 1);
+        using var path = new GraphicsPath();
+        float d = radius * 2;
+        path.AddArc(bounds.Left, bounds.Top, d, d, 180, 90);
+        path.AddArc(bounds.Right - d, bounds.Top, d, d, 270, 90);
+        path.AddArc(bounds.Right - d, bounds.Bottom - d, d, d, 0, 90);
+        path.AddArc(bounds.Left, bounds.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+
+        using var fill = new SolidBrush(palette.Panel);
+        using var border = new Pen(palette.PanelBorder, layout.Scale);
+        g.FillPath(fill, path);
+        g.DrawPath(border, path);
+    }
+
     private void DrawSpeedLine(Graphics g, string arrow, double bytesPerSec, Brush arrowBrush, Brush textBrush,
-        float x, float y, WidgetLayout layout)
+        float x, float y, MeterLayout layout)
     {
         var line = new RectangleF(x, y, layout.ColumnWidth, layout.LineHeight);
         g.DrawString(arrow, _valueFont!, arrowBrush, line, _leftFormat);
         g.DrawString(SpeedFormatter.Format(bytesPerSec, _settings.UseBits), _valueFont!, textBrush, line, _rightFormat);
     }
 
-    private readonly record struct Palette(Color Text, Color Name, Color Up, Color Down)
+    private readonly record struct Palette(Color Text, Color Name, Color Up, Color Down, Color Panel, Color PanelBorder)
     {
-        public static Palette Current()
+        /// <summary>
+        /// On the taskbar the text has to read against the taskbar, which follows the *system*
+        /// theme; the floating panel is an app surface and follows the *apps* theme.
+        /// </summary>
+        public static Palette Current(bool floating)
         {
             using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
-            bool light = key?.GetValue("SystemUsesLightTheme") is int v && v != 0;
+            string valueName = floating ? "AppsUseLightTheme" : "SystemUsesLightTheme";
+            bool light = key?.GetValue(valueName) is int v && v != 0;
             return light
                 ? new Palette(Color.FromArgb(20, 20, 20), Color.FromArgb(200, 20, 20, 20),
-                    Color.FromArgb(196, 80, 10), Color.FromArgb(16, 124, 16))
+                    Color.FromArgb(196, 80, 10), Color.FromArgb(16, 124, 16),
+                    Color.FromArgb(242, 249, 249, 249), Color.FromArgb(90, 0, 0, 0))
                 : new Palette(Color.White, Color.FromArgb(200, 255, 255, 255),
-                    Color.FromArgb(255, 170, 80), Color.FromArgb(108, 203, 95));
+                    Color.FromArgb(255, 170, 80), Color.FromArgb(108, 203, 95),
+                    Color.FromArgb(242, 32, 32, 32), Color.FromArgb(110, 255, 255, 255));
         }
     }
 
     // ---------------------------------------------------------------- mouse: drag + tooltip
 
-    private int Along(Point p) => _taskbar?.IsHorizontal != false ? p.X : p.Y;
-
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
-        if (e.Button != MouseButtons.Left || _taskbar is null)
+        if (e.Button != MouseButtons.Left || (!Floating && _taskbar is null))
             return;
         _dragging = true;
-        _dragStartCursor = Along(Cursor.Position);
-        _dragStartPos = _dragPos = Along(_position);
+        _dragStartCursor = Cursor.Position;
+        _dragStartPosition = _dragPosition = _position;
         _toolTip.Hide(this);
     }
 
@@ -405,7 +446,10 @@ internal sealed class TaskbarWidget : Form
         base.OnMouseMove(e);
         if (_dragging)
         {
-            _dragPos = _dragStartPos + Along(Cursor.Position) - _dragStartCursor;
+            var cursor = Cursor.Position;
+            _dragPosition = new Point(
+                _dragStartPosition.X + cursor.X - _dragStartCursor.X,
+                _dragStartPosition.Y + cursor.Y - _dragStartCursor.Y);
             Render();
             return;
         }
@@ -433,25 +477,33 @@ internal sealed class TaskbarWidget : Form
             return;
         _dragging = false;
 
-        var tb = _taskbar;
-        if (tb is null || Math.Abs(_dragPos - _dragStartPos) < 3)
+        var moved = new Size(_dragPosition.X - _dragStartPosition.X, _dragPosition.Y - _dragStartPosition.Y);
+        if (Math.Abs(moved.Width) < 3 && Math.Abs(moved.Height) < 3)
             return;
 
-        // Remember the offset from whichever end of the taskbar is closer, so the widget grows
-        // away from that end when interfaces come and go.
-        int length = tb.IsHorizontal ? _size.Width : _size.Height;
-        int start = tb.IsHorizontal ? tb.Bounds.Left : tb.Bounds.Top;
-        int end = tb.IsHorizontal ? tb.Bounds.Right : tb.Bounds.Bottom;
-        int pos = Along(_position);
-        if (pos + length / 2 < (start + end) / 2)
+        if (Floating)
         {
-            _settings.Anchor = AnchorSide.Near;
-            _settings.AnchorOffset = pos - start;
+            _settings.FloatingLeft = _position.X;
+            _settings.FloatingTop = _position.Y;
         }
-        else
+        else if (_taskbar is { } tb)
         {
-            _settings.Anchor = AnchorSide.Far;
-            _settings.AnchorOffset = end - (pos + length);
+            // Remember the offset from whichever end of the taskbar is closer, so the meter grows
+            // away from that end when interfaces come and go.
+            int length = tb.IsHorizontal ? _size.Width : _size.Height;
+            int start = tb.IsHorizontal ? tb.Bounds.Left : tb.Bounds.Top;
+            int end = tb.IsHorizontal ? tb.Bounds.Right : tb.Bounds.Bottom;
+            int pos = tb.IsHorizontal ? _position.X : _position.Y;
+            if (pos + length / 2 < (start + end) / 2)
+            {
+                _settings.Anchor = AnchorSide.Near;
+                _settings.AnchorOffset = pos - start;
+            }
+            else
+            {
+                _settings.Anchor = AnchorSide.Far;
+                _settings.AnchorOffset = end - (pos + length);
+            }
         }
         PositionChanged?.Invoke(this, EventArgs.Empty);
     }
@@ -490,7 +542,6 @@ internal sealed class TaskbarWidget : Form
         if (disposing)
         {
             UnhookWinEvent(_foregroundHook);
-            _obstacles.Dispose();
             _toolTip.Dispose();
             _valueFont?.Dispose();
             _nameFont?.Dispose();

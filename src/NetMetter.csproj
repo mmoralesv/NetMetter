@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- The 10.0.19041 Windows SDK projection provides Windows.ApplicationModel.StartupTask
+         (used when running as an MSIX package); the app itself still runs on Windows 10 1809+. -->
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationIcon>Resources\NetMetter.ico</ApplicationIcon>
+    <RootNamespace>NetMetter</RootNamespace>
+    <AssemblyName>NetMetter</AssemblyName>
+    <Product>NetMetter</Product>
+    <!-- The UI is English-only; skip the WinForms satellite resource assemblies. -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- MAJOR.MINOR.PATCH only: the MSIX package version appends ".0" (the Store owns the 4th field). -->
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+
+</Project>

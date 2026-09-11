@@ -4,14 +4,14 @@ using Microsoft.Win32;
 
 namespace NetMetter;
 
-/// <summary>Owns the sampling timer, the taskbar widget, the tray icon and the shared context menu.</summary>
+/// <summary>Owns the sampling loop, the meter window, the tray icon and the shared context menu.</summary>
 internal sealed class TrayApplication : ApplicationContext
 {
     private static readonly int[] IntervalChoices = [500, 1000, 2000, 5000];
 
-    private readonly AppSettings _settings = AppSettings.Load();
+    private readonly AppSettings _settings;
     private readonly NetworkMonitor _monitor = new();
-    private readonly TaskbarWidget _widget;
+    private readonly MeterWindow _meter;
     private readonly NotifyIcon _notifyIcon;
     private readonly Icon _icon;
     private readonly ContextMenuStrip _menu;
@@ -19,16 +19,19 @@ internal sealed class TrayApplication : ApplicationContext
 
     private ToolStripMenuItem _interfacesMenu = null!;
     private ToolStripMenuItem _startupItem = null!;
+    private ToolStripMenuItem _taskbarModeItem = null!;
+    private ToolStripMenuItem _floatingModeItem = null!;
     private IReadOnlyList<InterfaceStat> _latest = [];
     private bool _exiting;
 
-    public TrayApplication()
+    public TrayApplication(AppSettings settings)
     {
-        _widget = new TaskbarWidget(_settings);
-        _widget.PositionChanged += (_, _) => _settings.Save();
+        _settings = settings;
+        _meter = new MeterWindow(_settings);
+        _meter.PositionChanged += (_, _) => _settings.Save();
 
         _menu = BuildMenu();
-        _widget.ContextMenuStrip = _menu;
+        _meter.ContextMenuStrip = _menu;
 
         _icon = AppIcon.Create();
         _notifyIcon = new NotifyIcon
@@ -46,7 +49,7 @@ internal sealed class TrayApplication : ApplicationContext
         SystemEvents.UserPreferenceChanged += OnSystemChanged;
     }
 
-    private void OnSystemChanged(object? sender, EventArgs e) => _widget.Render();
+    private void OnSystemChanged(object? sender, EventArgs e) => _meter.Render();
 
     /// <summary>
     /// Samples on a worker thread (the adapter APIs can stall for seconds while a network is
@@ -56,14 +59,23 @@ internal sealed class TrayApplication : ApplicationContext
     {
         do
         {
-            // The first sample only primes the counters, so it renders zeros.
-            var stats = await Task.Run(_monitor.Sample);
-            if (_exiting)
-                return;
-            _latest = stats;
-            var visible = stats.Where(_settings.IsVisible).ToList();
-            _widget.UpdateItems(visible);
-            _notifyIcon.Text = BuildTrayText(visible);
+            try
+            {
+                // The first sample only primes the counters, so it renders zeros.
+                var stats = await Task.Run(_monitor.Sample);
+                if (_exiting)
+                    return;
+                _latest = stats;
+                var visible = stats.Where(_settings.IsVisible).ToList();
+                _meter.UpdateItems(visible);
+                _notifyIcon.Text = BuildTrayText(visible);
+            }
+            catch (Exception ex)
+            {
+                // One bad sample (adapter removed mid-read, display change during paint) must not
+                // end the loop; the next tick usually succeeds.
+                AppLog.Error("Sampling tick", ex);
+            }
         }
         while (await _timer.WaitForNextTickAsync());
     }
@@ -101,6 +113,11 @@ internal sealed class TrayApplication : ApplicationContext
             if (e.CloseReason == ToolStripDropDownCloseReason.ItemClicked)
                 e.Cancel = true;
         };
+
+        var display = new ToolStripMenuItem("Show meter");
+        _taskbarModeItem = new ToolStripMenuItem("On the taskbar", null, (_, _) => SetMode(DisplayMode.Taskbar));
+        _floatingModeItem = new ToolStripMenuItem("In a floating window", null, (_, _) => SetMode(DisplayMode.Floating));
+        display.DropDownItems.AddRange([_taskbarModeItem, _floatingModeItem]);
 
         var showNames = new ToolStripMenuItem("Show interface names") { Checked = _settings.ShowNames, CheckOnClick = true };
         showNames.CheckedChanged += (_, _) =>
@@ -142,22 +159,22 @@ internal sealed class TrayApplication : ApplicationContext
 
         var resetPosition = new ToolStripMenuItem("Reset position", null, (_, _) =>
         {
-            _widget.ResetPosition();
+            _meter.ResetPosition();
             _settings.Save();
         });
 
-        _startupItem = new ToolStripMenuItem("Start with Windows", null, (_, _) =>
-        {
-            AppSettings.StartWithWindows = !AppSettings.StartWithWindows;
-        });
+        _startupItem = new ToolStripMenuItem("Start with Windows", null, (_, _) => ToggleStartup());
 
         var networkSettings = new ToolStripMenuItem("Network settings…", null, (_, _) =>
-            Process.Start(new ProcessStartInfo("ms-settings:network") { UseShellExecute = true }));
+            Open("ms-settings:network"));
+
+        var about = new ToolStripMenuItem("About NetMetter…", null, (_, _) => ShowAbout());
 
         var exit = new ToolStripMenuItem("Exit", null, (_, _) => ExitThread());
 
         menu.Items.AddRange([
             _interfacesMenu,
+            display,
             showNames,
             units,
             interval,
@@ -166,10 +183,85 @@ internal sealed class TrayApplication : ApplicationContext
             _startupItem,
             networkSettings,
             new ToolStripSeparator(),
+            about,
             exit,
         ]);
-        menu.Opening += (_, _) => _startupItem.Checked = AppSettings.StartWithWindows;
+        menu.Opening += (_, _) =>
+        {
+            _taskbarModeItem.Checked = _settings.Mode == DisplayMode.Taskbar;
+            _floatingModeItem.Checked = _settings.Mode == DisplayMode.Floating;
+            RefreshStartupItem();
+        };
         return menu;
+    }
+
+    private void SetMode(DisplayMode mode)
+    {
+        if (_settings.Mode == mode)
+            return;
+        _settings.Mode = mode;
+        _settings.Save();
+        _meter.Render();
+    }
+
+    private async void RefreshStartupItem()
+    {
+        try
+        {
+            _startupItem.Checked = StartupRegistration.IsOn(await StartupRegistration.GetStateAsync());
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Reading start-up state", ex);
+        }
+    }
+
+    private async void ToggleStartup()
+    {
+        try
+        {
+            bool turnOn = !StartupRegistration.IsOn(await StartupRegistration.GetStateAsync());
+            var result = await StartupRegistration.SetEnabledAsync(turnOn);
+            _startupItem.Checked = StartupRegistration.IsOn(result);
+
+            if (turnOn && result == StartupState.DisabledByUser)
+                OfferStartupSettings("Start-up for NetMetter is turned off in Windows Settings, so only you can turn it back on.");
+            else if (result is StartupState.DisabledByPolicy or StartupState.EnabledByPolicy)
+                MessageBox.Show("A policy on this PC controls whether NetMetter starts with Windows.",
+                    "NetMetter", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Changing start-up state", ex);
+        }
+    }
+
+    private static void OfferStartupSettings(string message)
+    {
+        var answer = MessageBox.Show($"{message}\n\nOpen Startup Apps settings now?",
+            "NetMetter", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+        if (answer == DialogResult.Yes)
+            Open("ms-settings:startupapps");
+    }
+
+    private void ShowAbout() =>
+        MessageBox.Show(
+            $"NetMetter {AppEnvironment.Version}\n\n" +
+            "Live upload and download speed for each connected network interface.\n\n" +
+            $"{AppEnvironment.PrivacyStatement}\n\n" +
+            $"Log file: {AppLog.FilePath}",
+            "About NetMetter", MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+    private static void Open(string target)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(target) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error($"Opening {target}", ex);
+        }
     }
 
     private void PopulateInterfacesMenu()
@@ -211,7 +303,7 @@ internal sealed class TrayApplication : ApplicationContext
     private void SaveAndRender()
     {
         _settings.Save();
-        _widget.UpdateItems(_latest.Where(_settings.IsVisible).ToList());
+        _meter.UpdateItems(_latest.Where(_settings.IsVisible).ToList());
     }
 
     protected override void ExitThreadCore()
@@ -232,7 +324,7 @@ internal sealed class TrayApplication : ApplicationContext
             _notifyIcon.Dispose();
             _icon.Dispose();
             _menu.Dispose();
-            _widget.Dispose();
+            _meter.Dispose();
             _monitor.Dispose();
         }
         base.Dispose(disposing);

@@ -1,4 +1,5 @@
 using System.Text;
+using Microsoft.Win32;
 using static NetMetter.NativeMethods;
 
 namespace NetMetter;
@@ -13,6 +14,12 @@ internal sealed class TaskbarInfo
     public required TaskbarEdge Edge { get; init; }
     /// <summary>Rectangle of the notification area (tray icons + clock), if Windows exposes one.</summary>
     public Rectangle? NotifyArea { get; init; }
+    /// <summary>
+    /// Space to leave free just before the notification area. On Windows 11 with a left-aligned
+    /// taskbar the Widgets button sits there; Windows exposes no supported way to ask for its
+    /// position, and one taskbar button is about as wide as the taskbar is tall.
+    /// </summary>
+    public int ReservedBeforeNotifyArea { get; init; }
     public required float Scale { get; init; }
     /// <summary>False while an auto-hide taskbar is slid off screen.</summary>
     public required bool IsShown { get; init; }
@@ -66,19 +73,20 @@ internal sealed class TaskbarInfo
             Bounds = bounds,
             Edge = edge,
             NotifyArea = notify,
+            ReservedBeforeNotifyArea = WidgetsButtonWidth(thickness),
             Scale = dpi == 0 ? 1f : dpi / 96f,
             IsShown = IsWindowVisible(tray) && visibleThickness >= thickness / 2,
         };
     }
 
     /// <summary>
-    /// True when the foreground window is a full-screen app (video, game, presentation) on the
-    /// taskbar's monitor. Windows hides the taskbar in that case, so we must hide too.
+    /// True when a full-screen app (video, game, presentation) is in the foreground on the given
+    /// monitor. Windows hides the taskbar in that case, so the meter hides too.
     /// </summary>
-    public bool IsFullscreenAppActive(IntPtr ownWindow)
+    public static bool IsFullscreenAppActive(IntPtr ownWindow, Rectangle monitor)
     {
         var fg = GetForegroundWindow();
-        if (fg == IntPtr.Zero || fg == ownWindow || fg == Handle || fg == GetShellWindow())
+        if (fg == IntPtr.Zero || fg == ownWindow || fg == GetShellWindow())
             return false;
 
         var cls = new StringBuilder(64);
@@ -90,13 +98,32 @@ internal sealed class TaskbarInfo
         if (IsZoomed(fg) || !GetWindowRect(fg, out var r))
             return false;
 
-        var monitor = GetMonitorBounds(Handle);
         var w = r.ToRectangle();
         return w.Left <= monitor.Left && w.Top <= monitor.Top
             && w.Right >= monitor.Right && w.Bottom >= monitor.Bottom;
     }
 
-    private static Rectangle GetMonitorBounds(IntPtr hwnd)
+    /// <summary>
+    /// Width of the Windows 11 Widgets button when it sits next to the notification area, which is
+    /// what it does while the taskbar is left-aligned. Reading these preferences is enough; nothing
+    /// is written, and on any other configuration this is zero.
+    /// </summary>
+    private static int WidgetsButtonWidth(int thickness)
+    {
+        if (Environment.OSVersion.Version.Build < 22000)
+            return 0;
+
+        using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced");
+        bool leftAligned = key?.GetValue("TaskbarAl") is int alignment && alignment == 0;
+        bool widgetsShown = key?.GetValue("TaskbarDa") is not int widgets || widgets != 0; // absent means shown
+        return leftAligned && widgetsShown ? thickness : 0;
+    }
+
+    /// <summary>True when a full-screen app covers this taskbar's monitor.</summary>
+    public bool IsFullscreenAppActive(IntPtr ownWindow) =>
+        IsFullscreenAppActive(ownWindow, GetMonitorBounds(Handle));
+
+    public static Rectangle GetMonitorBounds(IntPtr hwnd)
     {
         var mi = new MONITORINFO { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<MONITORINFO>() };
         var hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
