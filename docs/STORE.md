@@ -49,8 +49,8 @@ Runtime, because no framework package exists for it. Expect ~55 MB per architect
 - [x] Global exception handling + diagnostic log (`Program.cs`, `AppLog.cs`).
 - [x] Package manifest, generated logos/`.ico`, `build/Package.ps1`.
 - [x] Privacy policy (`docs/PRIVACY.md`).
+- [x] Unit-test project (`tests/NetMetter.Tests`, 37 tests: formatting, rate math, settings, placement).
 - [ ] Fill in the support email and host the privacy policy.
-- [ ] Add a unit-test project (recommended before wiring CI).
 
 ## Certification
 
@@ -67,9 +67,18 @@ GitHub Actions on `windows-latest`, four workflows:
 | `store-rollout.yml` | manual | raise / finalize / halt the rollout |
 | `store-listing.yml` | `store/listing.json` change | push listing text to the Store |
 
-Secrets (in protected `store-flight` / `store-production` environments):
-`PARTNER_CENTER_TENANT_ID`, `PARTNER_CENTER_CLIENT_ID`, `PARTNER_CENTER_CLIENT_SECRET`,
-`PARTNER_CENTER_SELLER_ID`. Variables: `STORE_PRODUCT_ID`, `STORE_FLIGHT_ID`.
+The workflows exist under [`.github/workflows/`](../.github/workflows). Before they can
+publish, configure the repository on GitHub:
+
+- **Environments** `store-flight` and `store-production` (add required reviewers to
+  `store-production` so the 10% rollout waits for a human).
+- **Secrets** (on those environments): `PARTNER_CENTER_TENANT_ID`,
+  `PARTNER_CENTER_CLIENT_ID`, `PARTNER_CENTER_CLIENT_SECRET`, `PARTNER_CENTER_SELLER_ID`.
+- **Variables** (repository): `STORE_PRODUCT_ID`, `STORE_FLIGHT_ID`,
+  `STORE_IDENTITY_NAME`, `STORE_PUBLISHER`, `STORE_PUBLISHER_DISPLAY_NAME`.
+
+`ci.yml` runs on every push/PR (build, format, test, and an unsigned package smoke
+build) and needs none of the above.
 
 Publishing uses the [`microsoft/microsoft-store-apppublisher`](https://github.com/microsoft/msstore-cli)
 action + `msstore` CLI. Notes:

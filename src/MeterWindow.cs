@@ -257,7 +257,7 @@ internal sealed class MeterWindow : Form
     }
 
     /// <summary>Just before the notification area, leaving room for the Widgets button if it's there.</summary>
-    private static int DefaultTaskbarPosition(TaskbarInfo tb, int length)
+    internal static int DefaultTaskbarPosition(TaskbarInfo tb, int length)
     {
         int margin = (int)(4 * tb.Scale);
         int limit = tb.NotifyArea is { } n

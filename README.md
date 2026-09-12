@@ -35,6 +35,7 @@ Requires the .NET 10 SDK.
 
 ```bash
 dotnet run --project src
+dotnet test        # 37 unit tests (uses NetMetter.sln)
 ```
 
 ## Package for the Microsoft Store
@@ -69,7 +70,9 @@ which keeps it within Store policy.
 | `src/AppSettings.cs` | JSON settings |
 | `src/AppEnvironment.cs`, `src/AppLog.cs` | Packaged/unpackaged detection, diagnostic log |
 | `tools/AssetGen/` | Generates the `.ico` and MSIX logos from `src/AppIcon.cs` |
+| `tests/NetMetter.Tests/` | xUnit tests: speed formatting, rate math, settings, placement |
 | `build/Package.ps1` | Builds the MSIX bundle |
+| `.github/workflows/` | CI (build/format/test/pack) and Store release/rollout/listing pipelines |
 
 ## Limitations
 
