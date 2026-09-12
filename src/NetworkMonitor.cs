@@ -78,11 +78,10 @@ internal sealed class NetworkMonitor : IDisposable
             }
 
             double down = 0, up = 0;
-            if (elapsed > 0 && _lastCounters.TryGetValue(ni.Id, out var prev))
+            if (_lastCounters.TryGetValue(ni.Id, out var prev))
             {
-                // Counters can go backwards when an adapter is reset; treat that as zero traffic.
-                down = Math.Max(0, rx - prev.Rx) / elapsed;
-                up = Math.Max(0, tx - prev.Tx) / elapsed;
+                down = Rate(prev.Rx, rx, elapsed);
+                up = Rate(prev.Tx, tx, elapsed);
             }
             counters[ni.Id] = (rx, tx);
 
@@ -108,6 +107,13 @@ internal sealed class NetworkMonitor : IDisposable
         _lastCounters = counters;
         return result;
     }
+
+    /// <summary>
+    /// Bytes per second between two counter readings. Counters can go backwards when an adapter is
+    /// reset, so a negative delta is treated as zero; a non-positive interval yields zero.
+    /// </summary>
+    internal static double Rate(long previousBytes, long currentBytes, double elapsedSeconds) =>
+        elapsedSeconds > 0 ? Math.Max(0, currentBytes - previousBytes) / elapsedSeconds : 0;
 
     private static bool IsCandidate(NetworkInterface ni) =>
         ni.OperationalStatus == OperationalStatus.Up

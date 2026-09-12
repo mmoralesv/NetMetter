@@ -1,0 +1,47 @@
+name: Store rollout
+
+# Manage the gradual rollout of the latest production submission, once release.yml has
+# started it at 10%. Run from the Actions tab: pick an action (and a percentage).
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Rollout action'
+        required: true
+        type: choice
+        options: [update, finalize, halt, status]
+        default: status
+      percentage:
+        description: 'Target percentage (only for "update")'
+        required: false
+        default: '25'
+
+permissions:
+  contents: read
+
+jobs:
+  rollout:
+    runs-on: windows-latest
+    environment: store-production   # rollout changes affect production; gate them too
+    steps:
+      - name: Configure Microsoft Store CLI
+        uses: microsoft/microsoft-store-apppublisher@v1.1
+
+      - name: Sign in to Partner Center
+        run: >
+          msstore reconfigure
+          --tenantId ${{ secrets.PARTNER_CENTER_TENANT_ID }}
+          --sellerId ${{ secrets.PARTNER_CENTER_SELLER_ID }}
+          --clientId ${{ secrets.PARTNER_CENTER_CLIENT_ID }}
+          --clientSecret ${{ secrets.PARTNER_CENTER_CLIENT_SECRET }}
+
+      - name: Apply rollout action
+        shell: pwsh
+        run: |
+          $id = '${{ vars.STORE_PRODUCT_ID }}'
+          switch ('${{ inputs.action }}') {
+            'update'   { msstore submission rollout update $id ${{ inputs.percentage }} }
+            'finalize' { msstore submission rollout finalize $id }
+            'halt'     { msstore submission rollout halt $id }
+            'status'   { msstore submission rollout get $id }
+          }

@@ -20,4 +20,8 @@
     <Version>1.0.0</Version>
   </PropertyGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetMetter.Tests" />
+  </ItemGroup>
+
 </Project>

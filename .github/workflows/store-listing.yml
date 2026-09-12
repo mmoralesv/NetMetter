@@ -1,0 +1,53 @@
+name: Store listing
+
+# Push Store listing text (description, release notes, screenshots metadata) without
+# shipping a new package. Edit store/listing.json and push to main.
+#
+# First-time setup: run this workflow manually once with action "get" to print the
+# current submission JSON from Partner Center, then commit it as store/listing.json
+# and edit from there.
+on:
+  push:
+    branches: [main]
+    paths: ['store/listing.json']
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'get = print current submission JSON; update = apply store/listing.json'
+        required: true
+        type: choice
+        options: [get, update]
+        default: get
+
+permissions:
+  contents: read
+
+jobs:
+  listing:
+    runs-on: windows-latest
+    environment: store-production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure Microsoft Store CLI
+        uses: microsoft/microsoft-store-apppublisher@v1.1
+
+      - name: Sign in to Partner Center
+        run: >
+          msstore reconfigure
+          --tenantId ${{ secrets.PARTNER_CENTER_TENANT_ID }}
+          --sellerId ${{ secrets.PARTNER_CENTER_SELLER_ID }}
+          --clientId ${{ secrets.PARTNER_CENTER_CLIENT_ID }}
+          --clientSecret ${{ secrets.PARTNER_CENTER_CLIENT_SECRET }}
+
+      - name: Get current submission JSON
+        if: inputs.action == 'get'
+        run: msstore submission get ${{ vars.STORE_PRODUCT_ID }}
+
+      - name: Update and publish listing
+        if: github.event_name == 'push' || inputs.action == 'update'
+        shell: pwsh
+        run: |
+          $metadata = Get-Content -Raw store/listing.json
+          msstore submission updateMetadata ${{ vars.STORE_PRODUCT_ID }} $metadata
+          msstore submission publish ${{ vars.STORE_PRODUCT_ID }}
