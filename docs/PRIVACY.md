@@ -53,8 +53,8 @@ the "Last updated" date above will change.
 
 ## Contact
 
-Questions about this policy can be sent to: **{support-email}**
+Questions about this policy can be sent to: **jema.tech.dev@gmail.com**
 
-<!-- Before submitting to the Store: replace {support-email} with a real address and
-     host this file at a public HTTPS URL (e.g. GitHub Pages). Put that URL in the
-     Privacy policy URL field in Partner Center. -->
+<!-- Published via GitHub Pages at https://mmoralesv.github.io/NetMetter/privacy.html
+     (build/build-site.py renders this file). That URL goes in the Partner Center
+     "Privacy policy URL" field. -->
