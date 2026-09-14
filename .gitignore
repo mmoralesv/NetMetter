@@ -1,6 +1,7 @@
 bin/
 obj/
 out/
+_site/
 publish/
 .vs/
 *.user
