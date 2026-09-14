@@ -1,6 +1,6 @@
 # NetMetter Privacy Policy
 
-_Last updated: 11 September 2026_
+_Last updated: 14 September 2026_
 
 NetMetter is a desktop utility that shows the upload and download speed of your
 network connections. This policy explains what it does and does not do with your
