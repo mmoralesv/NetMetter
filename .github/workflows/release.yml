@@ -67,6 +67,9 @@ jobs:
 
   store-flight:
     needs: build
+    # Skip Store publishing until it is switched on (repo variable STORE_PUBLISH_ENABLED=true).
+    # The app must be live in the Store and the PARTNER_CENTER_* secrets configured first.
+    if: vars.STORE_PUBLISH_ENABLED == 'true'
     runs-on: windows-latest
     environment: store-flight
     steps:
@@ -94,6 +97,7 @@ jobs:
 
   store-production:
     needs: [build, store-flight]
+    if: vars.STORE_PUBLISH_ENABLED == 'true'
     runs-on: windows-latest
     environment: store-production   # add required reviewers on this environment
     steps:
