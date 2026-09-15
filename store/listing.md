@@ -4,13 +4,13 @@ Paste-ready copy for the **Store listing** and **Properties** steps in Partner C
 Fields are grouped as they appear there. Replace anything in `{curly braces}` first.
 
 > Publisher: **JEMA.Tech** · Store ID: **9PHLZGZZN7CB** · Package identity: **JEMA.Tech.NetMetter**
+> Support: **jema.tech.dev@gmail.com**
 >
-> Still to fill in:
-> - `{support-email}` — a monitored support address (also used in the privacy policy).
->
-> Hosted (GitHub Pages) once the Pages workflow runs on `main`:
+> Hosted via GitHub Pages (live once the Pages workflow runs on `main`):
 > - Privacy policy: `https://mmoralesv.github.io/NetMetter/privacy.html`
 > - Website / landing: `https://mmoralesv.github.io/NetMetter/`
+>
+> All fields below are ready to paste — no placeholders remain.
 
 ---
 
@@ -139,7 +139,7 @@ JEMA.Tech
 
 - **Privacy policy URL:** `https://mmoralesv.github.io/NetMetter/privacy.html`
 - **Website (optional):** `https://mmoralesv.github.io/NetMetter/`
-- **Support contact info:** `{support-email}`
+- **Support contact info:** `jema.tech.dev@gmail.com`
 
 ---
 
