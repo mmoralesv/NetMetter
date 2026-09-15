@@ -24,6 +24,8 @@ permissions:
 
 jobs:
   listing:
+    # Skip until Store publishing is switched on (repo variable STORE_PUBLISH_ENABLED=true).
+    if: vars.STORE_PUBLISH_ENABLED == 'true'
     runs-on: windows-latest
     environment: store-production
     steps:

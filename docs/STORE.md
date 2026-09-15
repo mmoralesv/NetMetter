@@ -76,6 +76,11 @@ publish, configure the repository on GitHub:
   `PARTNER_CENTER_CLIENT_ID`, `PARTNER_CENTER_CLIENT_SECRET`, `PARTNER_CENTER_SELLER_ID`.
 - **Variables** (repository): `STORE_PRODUCT_ID`, `STORE_FLIGHT_ID`,
   `STORE_IDENTITY_NAME`, `STORE_PUBLISHER`, `STORE_PUBLISHER_DISPLAY_NAME`.
+- **Toggle** (repository variable): `STORE_PUBLISH_ENABLED`. The Store-publish jobs
+  (`release.yml` → store-flight / store-production, and `store-listing.yml`) are gated on
+  `STORE_PUBLISH_ENABLED == 'true'` and **skip cleanly** until you set it. Leave it unset
+  until the app is live in the Store and the secrets above are configured; then set it to
+  `true` so version tags publish automatically. The build job and GitHub Release always run.
 
 `ci.yml` runs on every push/PR (build, format, test, and an unsigned package smoke
 build) and needs none of the above.
