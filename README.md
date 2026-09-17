@@ -3,6 +3,8 @@
 A tiny Windows tray tool that shows each connected network interface and its live
 upload / download speed, either on the taskbar or in a floating window.
 
+[![Get it from the Microsoft Store](https://get.microsoft.com/images/en-us%20dark.svg)](https://apps.microsoft.com/detail/9PHLZGZZN7CB)
+
 ```
 Ethernet        Wi-Fi
 ↑  63.3 KB/s    ↑  0.0 KB/s
