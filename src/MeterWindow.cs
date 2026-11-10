@@ -24,6 +24,7 @@ internal sealed class MeterWindow : Form
     private readonly List<(RectangleF Rect, InterfaceStat Stat)> _hitZones = [];
     private readonly WinEventDelegate _foregroundChangedProc;
     private readonly IntPtr _foregroundHook;
+    private readonly System.Windows.Forms.Timer _foregroundDebounce;
     private readonly StringFormat _leftFormat;
     private readonly StringFormat _rightFormat;
 
@@ -62,8 +63,19 @@ internal sealed class MeterWindow : Form
         _rightFormat = new StringFormat(_leftFormat) { Alignment = StringAlignment.Far };
 
         // Clicking the taskbar raises it above us; re-assert our z-order as soon as that happens
-        // (and hide promptly when a full-screen app takes the foreground).
-        _foregroundChangedProc = (_, _, _, _, _, _, _) => Render();
+        // (and hide promptly when a full-screen app takes the foreground). Switching apps can fire
+        // this many times in a burst, so the renders are coalesced into one.
+        _foregroundDebounce = new System.Windows.Forms.Timer { Interval = 120 };
+        _foregroundDebounce.Tick += (_, _) =>
+        {
+            _foregroundDebounce.Stop();
+            Render();
+        };
+        _foregroundChangedProc = (_, _, _, _, _, _, _) =>
+        {
+            _foregroundDebounce.Stop();
+            _foregroundDebounce.Start();
+        };
         _foregroundHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
             IntPtr.Zero, _foregroundChangedProc, 0, 0, WINEVENT_OUTOFCONTEXT);
     }
@@ -95,6 +107,17 @@ internal sealed class MeterWindow : Form
         _settings.AnchorOffset = 0;
         _settings.FloatingLeft = null;
         _settings.FloatingTop = null;
+        Render();
+    }
+
+    /// <summary>
+    /// Re-reads the cached theme and shell lookups and repaints. Called when Windows reports a
+    /// display or user-preference change, which is when those cached values can actually differ.
+    /// </summary>
+    public void RefreshSystemState()
+    {
+        Palette.Invalidate();
+        TaskbarInfo.InvalidateShellCache();
         Render();
     }
 
@@ -409,11 +432,29 @@ internal sealed class MeterWindow : Form
 
     private readonly record struct Palette(Color Text, Color Name, Color Up, Color Down, Color Panel, Color PanelBorder)
     {
+        // Cached: the theme only changes on a user-preference event, but this is read on every
+        // repaint (once a second), and each read opens a registry key.
+        private static Palette? _cached;
+        private static bool _cachedFloating;
+
+        public static void Invalidate() => _cached = null;
+
         /// <summary>
         /// On the taskbar the text has to read against the taskbar, which follows the *system*
         /// theme; the floating panel is an app surface and follows the *apps* theme.
         /// </summary>
         public static Palette Current(bool floating)
+        {
+            if (_cached is { } cached && _cachedFloating == floating)
+                return cached;
+
+            var palette = Read(floating);
+            _cachedFloating = floating;
+            _cached = palette;
+            return palette;
+        }
+
+        private static Palette Read(bool floating)
         {
             using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
             string valueName = floating ? "AppsUseLightTheme" : "SystemUsesLightTheme";
@@ -542,6 +583,7 @@ internal sealed class MeterWindow : Form
         if (disposing)
         {
             UnhookWinEvent(_foregroundHook);
+            _foregroundDebounce.Dispose();
             _toolTip.Dispose();
             _valueFont?.Dispose();
             _nameFont?.Dispose();

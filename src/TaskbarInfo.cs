@@ -28,25 +28,36 @@ internal sealed class TaskbarInfo
     /// <summary>Height of a horizontal taskbar, width of a vertical one.</summary>
     public int Thickness => IsHorizontal ? Bounds.Height : Bounds.Width;
 
+    // The shell queries below are the slow part of a refresh: SHAppBarMessage sends a message to
+    // Explorer and blocks the calling thread while Explorer is busy, and the preference lookups hit
+    // the registry. Query() runs on the UI thread once a second, so their results are cached and
+    // refreshed only occasionally; the docked edge and the taskbar preferences change very rarely.
+    private static readonly TimeSpan ShellCacheLifetime = TimeSpan.FromSeconds(5);
+    private static readonly System.Diagnostics.Stopwatch ShellClock = System.Diagnostics.Stopwatch.StartNew();
+    private static TimeSpan _shellCachedAt;
+    private static TaskbarEdge _cachedEdge;
+    private static bool _cachedReserveWidgets;
+    private static bool _shellCacheValid;
+
+    /// <summary>Drops the cached shell/preference lookups, so the next query re-reads them.</summary>
+    public static void InvalidateShellCache() => _shellCacheValid = false;
+
     public static TaskbarInfo? Query()
     {
         var tray = FindWindow("Shell_TrayWnd", null);
         if (tray == IntPtr.Zero || !GetWindowRect(tray, out var r))
             return null;
 
-        // GetWindowRect gives the *current* position (it moves off screen when auto-hidden),
-        // whereas the app-bar message tells us which screen edge the taskbar is docked to.
         var bounds = r.ToRectangle();
-        var abd = new APPBARDATA { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<APPBARDATA>() };
-        var edge = SHAppBarMessage(ABM_GETTASKBARPOS, ref abd) != UIntPtr.Zero
-            ? abd.uEdge switch
-            {
-                ABE_LEFT => TaskbarEdge.Left,
-                ABE_TOP => TaskbarEdge.Top,
-                ABE_RIGHT => TaskbarEdge.Right,
-                _ => TaskbarEdge.Bottom,
-            }
-            : bounds.Width >= bounds.Height ? TaskbarEdge.Bottom : TaskbarEdge.Left;
+        var now = ShellClock.Elapsed;
+        if (!_shellCacheValid || now - _shellCachedAt > ShellCacheLifetime)
+        {
+            _cachedEdge = QueryDockedEdge(bounds);
+            _cachedReserveWidgets = ShouldReserveWidgetsButton();
+            _shellCachedAt = now;
+            _shellCacheValid = true;
+        }
+        var edge = _cachedEdge;
 
         var monitor = GetMonitorBounds(tray);
         var visible = Rectangle.Intersect(bounds, monitor);
@@ -73,7 +84,7 @@ internal sealed class TaskbarInfo
             Bounds = bounds,
             Edge = edge,
             NotifyArea = notify,
-            ReservedBeforeNotifyArea = WidgetsButtonWidth(thickness),
+            ReservedBeforeNotifyArea = _cachedReserveWidgets ? thickness : 0,
             Scale = dpi == 0 ? 1f : dpi / 96f,
             IsShown = IsWindowVisible(tray) && visibleThickness >= thickness / 2,
         };
@@ -104,19 +115,37 @@ internal sealed class TaskbarInfo
     }
 
     /// <summary>
-    /// Width of the Windows 11 Widgets button when it sits next to the notification area, which is
-    /// what it does while the taskbar is left-aligned. Reading these preferences is enough; nothing
-    /// is written, and on any other configuration this is zero.
+    /// Which screen edge the taskbar is docked to. GetWindowRect gives the *current* position (it
+    /// moves off screen when auto-hidden), whereas the app-bar message gives the docked edge.
     /// </summary>
-    private static int WidgetsButtonWidth(int thickness)
+    private static TaskbarEdge QueryDockedEdge(Rectangle bounds)
+    {
+        var abd = new APPBARDATA { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<APPBARDATA>() };
+        return SHAppBarMessage(ABM_GETTASKBARPOS, ref abd) != UIntPtr.Zero
+            ? abd.uEdge switch
+            {
+                ABE_LEFT => TaskbarEdge.Left,
+                ABE_TOP => TaskbarEdge.Top,
+                ABE_RIGHT => TaskbarEdge.Right,
+                _ => TaskbarEdge.Bottom,
+            }
+            : bounds.Width >= bounds.Height ? TaskbarEdge.Bottom : TaskbarEdge.Left;
+    }
+
+    /// <summary>
+    /// True when the Windows 11 Widgets button sits next to the notification area, which is what it
+    /// does while the taskbar is left-aligned. Reading these preferences is enough; nothing is
+    /// written, and on any other configuration this is false.
+    /// </summary>
+    private static bool ShouldReserveWidgetsButton()
     {
         if (Environment.OSVersion.Version.Build < 22000)
-            return 0;
+            return false;
 
         using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced");
         bool leftAligned = key?.GetValue("TaskbarAl") is int alignment && alignment == 0;
         bool widgetsShown = key?.GetValue("TaskbarDa") is not int widgets || widgets != 0; // absent means shown
-        return leftAligned && widgetsShown ? thickness : 0;
+        return leftAligned && widgetsShown;
     }
 
     /// <summary>True when a full-screen app covers this taskbar's monitor.</summary>

@@ -140,7 +140,13 @@ foreach ($arch in $Architecture) {
     Invoke-Tool 'dotnet' @('publish', $project, '-c', 'Release', '-r', "win-$arch",
         '--self-contained', 'true', "-p:Version=$Version", '-o', $stage, '-nologo', '-v', 'quiet')
 
-    Get-ChildItem -LiteralPath $stage -Filter *.pdb -File | Remove-Item -Force
+    # Keep the PDBs out of the shipped payload, but set them aside: zipped into an .appxsym they
+    # let Partner Center resolve crash and hang reports to real stack traces.
+    $symbolStage = Join-Path $work "symbols\$arch"
+    New-Item -ItemType Directory -Path $symbolStage -Force | Out-Null
+    Get-ChildItem -LiteralPath $stage -Filter *.pdb -File | ForEach-Object {
+        Move-Item -LiteralPath $_.FullName -Destination $symbolStage -Force
+    }
     Copy-Item -LiteralPath (Join-Path $repoRoot 'packaging\Assets') -Destination (Join-Path $stage 'Assets') -Recurse
     Copy-Item -LiteralPath (Join-Path $work 'resources.pri') -Destination $stage
     Write-Manifest -Destination (Join-Path $stage 'AppxManifest.xml') -PackageVersion $packageVersion -Arch $arch
@@ -152,6 +158,33 @@ foreach ($arch in $Architecture) {
 
 $bundle = Join-Path $OutputDirectory "NetMetter_$packageVersion.msixbundle"
 Invoke-Tool $makeappx @('bundle', '/d', $packagesDir, '/p', $bundle, '/bv', $packageVersion, '/o')
+
+# ---------------------------------------------------------------- symbols and upload file
+# Both .appxsym and .msixupload are plain zips; Compress-Archive insists on a .zip name, so each
+# is built as one and renamed.
+
+function New-Zip {
+    param([Parameter(Mandatory)] [string[]] $Path, [Parameter(Mandatory)] [string] $Destination)
+    $temp = [System.IO.Path]::ChangeExtension($Destination, '.zip')
+    foreach ($p in @($temp, $Destination)) {
+        if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force }
+    }
+    Compress-Archive -Path $Path -DestinationPath $temp -CompressionLevel Optimal
+    Move-Item -LiteralPath $temp -Destination $Destination
+}
+
+$uploadParts = @($bundle)
+foreach ($arch in $Architecture) {
+    $symbolStage = Join-Path $work "symbols\$arch"
+    if (-not (Test-Path -LiteralPath $symbolStage)) { continue }
+    $appxsym = Join-Path $work "NetMetter_${packageVersion}_$arch.appxsym"
+    New-Zip -Path (Join-Path $symbolStage '*') -Destination $appxsym
+    $uploadParts += $appxsym
+}
+
+$upload = Join-Path $OutputDirectory "NetMetter_$packageVersion.msixupload"
+New-Zip -Path $uploadParts -Destination $upload
+Write-Host ("  symbols packed into {0} ({1:N1} MB)" -f (Split-Path $upload -Leaf), ((Get-Item -LiteralPath $upload).Length / 1MB))
 
 # ---------------------------------------------------------------- sign and verify
 
@@ -177,6 +210,8 @@ if ($RunWack) {
 }
 
 Write-Host ("Bundle: {0} ({1:N1} MB)" -f $bundle, ((Get-Item -LiteralPath $bundle).Length / 1MB)) -ForegroundColor Green
+Write-Host ("Upload: {0} ({1:N1} MB)" -f $upload, ((Get-Item -LiteralPath $upload).Length / 1MB)) -ForegroundColor Green
 if (-not $CertificateThumbprint) {
-    Write-Host 'Upload this bundle to Partner Center as is; the Store signs it during publishing.'
+    Write-Host 'Submit the .msixupload to Partner Center: it carries the bundle plus symbols, so'
+    Write-Host 'crash and hang reports resolve to stack traces. The .msixbundle is for sideloading.'
 }
