@@ -55,6 +55,9 @@ internal sealed class WelcomeDialog : Form
         _startWithWindows = new CheckBox
         {
             Text = "Start NetMetter when I sign in to Windows",
+            // On by default: a meter that does not come back after a reboot gets forgotten.
+            // The user still sees and consents to this choice before anything is drawn.
+            Checked = true,
             AutoSize = true,
             Margin = new Padding(0, 16, 0, 0),
         };

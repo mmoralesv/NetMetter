@@ -49,7 +49,7 @@ internal sealed class TrayApplication : ApplicationContext
         SystemEvents.UserPreferenceChanged += OnSystemChanged;
     }
 
-    private void OnSystemChanged(object? sender, EventArgs e) => _meter.Render();
+    private void OnSystemChanged(object? sender, EventArgs e) => _meter.RefreshSystemState();
 
     /// <summary>
     /// Samples on a worker thread (the adapter APIs can stall for seconds while a network is
