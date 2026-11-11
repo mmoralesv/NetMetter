@@ -54,7 +54,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: msixbundle
-          path: out/*.msixbundle
+          path: |
+            out/*.msixbundle
+            out/*.msixupload
           if-no-files-found: error
 
       - name: Draft GitHub Release
@@ -62,41 +64,18 @@ jobs:
         if: github.event_name == 'push'
         with:
           draft: true
-          files: out/*.msixbundle
+          # .msixupload is what Partner Center wants (bundle + symbols); .msixbundle is for sideloading.
+          files: |
+            out/*.msixupload
+            out/*.msixbundle
           generate_release_notes: true
 
-  store-flight:
-    needs: build
-    # Skip Store publishing until it is switched on (repo variable STORE_PUBLISH_ENABLED=true).
-    # The app must be live in the Store and the PARTNER_CENTER_* secrets configured first.
-    if: vars.STORE_PUBLISH_ENABLED == 'true'
-    runs-on: windows-latest
-    environment: store-flight
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: msixbundle
-          path: out
-
-      - name: Configure Microsoft Store CLI
-        uses: microsoft/microsoft-store-apppublisher@v1.1
-
-      - name: Sign in to Partner Center
-        run: >
-          msstore reconfigure
-          --tenantId ${{ secrets.PARTNER_CENTER_TENANT_ID }}
-          --sellerId ${{ secrets.PARTNER_CENTER_SELLER_ID }}
-          --clientId ${{ secrets.PARTNER_CENTER_CLIENT_ID }}
-          --clientSecret ${{ secrets.PARTNER_CENTER_CLIENT_SECRET }}
-
-      - name: Publish to the test flight
-        shell: pwsh
-        run: |
-          $bundle = (Get-Item out/*.msixbundle).FullName
-          msstore publish $bundle --appId ${{ vars.STORE_PRODUCT_ID }} --flightId ${{ vars.STORE_FLIGHT_ID }}
-
+  # Store publishing is OFF by default and skips cleanly: it needs a paid Microsoft Entra tenant
+  # that this account does not have. See docs/STORE.md for the decision and the manual runbook.
+  # To switch it on: configure the PARTNER_CENTER_* secrets on the store-production environment,
+  # then set the repo variable STORE_PUBLISH_ENABLED=true.
   store-production:
-    needs: [build, store-flight]
+    needs: build
     if: vars.STORE_PUBLISH_ENABLED == 'true'
     runs-on: windows-latest
     environment: store-production   # add required reviewers on this environment

@@ -56,43 +56,84 @@ Runtime, because no framework package exists for it. Expect ~55 MB per architect
 
 Up to 3 business days. Listing goes live ~15 minutes after it passes.
 
-## CI/CD (after the first release)
+## Releasing an update (the actual process)
 
-GitHub Actions on `windows-latest`, four workflows:
+Automated Store publishing is **deliberately off** — see the next section for why. Releases
+are made with this runbook; CI does everything except the final upload.
 
-| Workflow | Trigger | Does |
-| --- | --- | --- |
-| `ci.yml` | PR / push to main | build, format, tests, pack unsigned bundle |
-| `release.yml` | tag `v*.*.*` | build x64+arm64, bundle, WACK, GitHub Release, Store flight → approval → production 10% |
-| `store-rollout.yml` | manual | raise / finalize / halt the rollout |
-| `store-listing.yml` | `store/listing.json` change | push listing text to the Store |
+1. **Bump the version** in [`src/NetMetter.csproj`](../src/NetMetter.csproj)
+   (`<Version>` — `MAJOR.MINOR.PATCH`; the package appends `.0`).
+2. Commit, merge to `main`, then **tag it**: `git tag -a v1.0.2 -m "..." && git push origin v1.0.2`.
+3. `release.yml` builds x64 + arm64, runs the tests, and attaches both artifacts to a
+   **draft GitHub Release**. CI builds with the real Partner Center identity (from the
+   `STORE_*` repo variables), so its `.msixupload` is submittable as-is — download it from
+   the draft release, or build locally:
 
-The workflows exist under [`.github/workflows/`](../.github/workflows). Before they can
-publish, configure the repository on GitHub:
+   ```powershell
+   ./build/Package.ps1 -IdentityName "JEMA.Tech.NetMetter" `
+     -Publisher "CN=33A6D027-F324-4DFC-9111-791492CD98F8" -PublisherDisplayName "JEMA.Tech"
+   ```
 
-- **Environments** `store-flight` and `store-production` (add required reviewers to
-  `store-production` so the 10% rollout waits for a human).
-- **Secrets** (on those environments): `PARTNER_CENTER_TENANT_ID`,
-  `PARTNER_CENTER_CLIENT_ID`, `PARTNER_CENTER_CLIENT_SECRET`, `PARTNER_CENTER_SELLER_ID`.
-- **Variables** (repository): `STORE_PRODUCT_ID`, `STORE_FLIGHT_ID`,
-  `STORE_IDENTITY_NAME`, `STORE_PUBLISHER`, `STORE_PUBLISHER_DISPLAY_NAME`.
-- **Toggle** (repository variable): `STORE_PUBLISH_ENABLED`. The Store-publish jobs
-  (`release.yml` → store-flight / store-production, and `store-listing.yml`) are gated on
-  `STORE_PUBLISH_ENABLED == 'true'` and **skip cleanly** until you set it. Leave it unset
-  until the app is live in the Store and the secrets above are configured; then set it to
-  `true` so version tags publish automatically. The build job and GitHub Release always run.
+4. **Partner Center** → NetMetter → **Start update** → **Packages** → upload
+   `NetMetter_<version>.msixupload`.
+   **Upload the `.msixupload`, not the `.msixbundle`** — it carries the per-architecture
+   `.appxsym` symbols, which is what makes crash and hang reports resolve to stack traces
+   in the Health report. The `.msixbundle` is for sideload testing only.
+5. Re-use the `runFullTrust` justification in [`store/listing.md`](../store/listing.md),
+   update the release notes, and submit. Certification takes up to ~3 business days.
+6. When it goes live, **publish the draft GitHub Release**.
 
-`ci.yml` runs on every push/PR (build, format, test, and an unsigned package smoke
-build) and needs none of the above.
+## Why automated Store publishing is off
 
-Publishing uses the [`microsoft/microsoft-store-apppublisher`](https://github.com/microsoft/msstore-cli)
-action + `msstore` CLI. Notes:
+`release.yml` and `store-listing.yml` contain working Store-publish jobs, gated on the repo
+variable `STORE_PUBLISH_ENABLED`. It is **unset on purpose**, so those jobs skip cleanly and
+tag builds stay green.
+
+The blocker is account-level, not technical. The `msstore` CLI authenticates as a Microsoft
+Entra application, which requires an Entra **workforce tenant** associated with the Partner
+Center account. This is an individual developer account on a personal Microsoft account,
+which has none, and every route to one is paywalled:
+
+| Route | Outcome |
+| --- | --- |
+| Azure subscription signup | Needs a card, and Microsoft [does not accept prepaid or virtual cards](https://learn.microsoft.com/en-us/azure/cost-management-billing/troubleshoot-billing/troubleshoot-declined-card) |
+| Partner Center → "Create Microsoft Entra ID" | Routes into the Microsoft 365 business signup, which ends at a mandatory "Payment setup" step |
+| Entra admin center | Free/trial accounts [cannot create workforce tenants](https://learn.microsoft.com/en-us/entra/fundamentals/create-new-tenant) |
+| Microsoft 365 Developer Program | Joining does not grant a sandbox; eligibility needs a qualifying paid subscription (Visual Studio Pro/Enterprise, ISV Success, …) **and a valid billing account**. Also time-limited and revocable — a bad foundation for release credentials |
+| Entra External ID free trial | Creates a CIAM tenant, which Partner Center cannot use for app registration |
+
+The trade is small: automation would save ~10 minutes per release on an app that ships
+every few months, so the manual upload above is the rational choice.
+
+**If that ever changes**, switching on takes three steps:
+
+1. Register an Entra app in the tenant, and add it in Partner Center under
+   *Account settings → User management → Microsoft Entra applications* with the **Manager** role.
+2. Create a GitHub environment `store-production` (add a required reviewer) and set these
+   secrets on it: `PARTNER_CENTER_TENANT_ID`, `PARTNER_CENTER_CLIENT_ID`,
+   `PARTNER_CENTER_CLIENT_SECRET`, `PARTNER_CENTER_SELLER_ID`.
+3. Set the repo variable `STORE_PUBLISH_ENABLED=true`.
+
+Already configured (not secret): `STORE_PRODUCT_ID`, `STORE_IDENTITY_NAME`,
+`STORE_PUBLISHER`, `STORE_PUBLISHER_DISPLAY_NAME`.
+
+### Notes if it is ever switched on
 
 - `msstore publish` recreates the draft — for a release that also changes the listing,
   run `msstore publish --noCommit` first, then `submission update`, then `submission publish`.
 - The Store CLI's GitHub flow supports **free products only** today.
-- The CLI is in preview: pin the action version, keep the manual upload runbook as a fallback.
-- Certification is asynchronous — poll with `msstore submission poll` in a follow-up job.
+- The CLI is in preview: pin the action version; the manual runbook above stays the fallback.
+- Certification is asynchronous — `msstore submission poll` waits for the result.
+- A submission already in certification blocks starting another one.
+
+## Workflows
+
+| Workflow | Trigger | Does |
+| --- | --- | --- |
+| `ci.yml` | PR / push to main | build, format, tests, unsigned package smoke build — no credentials needed |
+| `release.yml` | tag `v*.*.*` | build x64+arm64, test, draft GitHub Release with `.msixupload` + `.msixbundle`; Store publish job skipped unless enabled |
+| `store-rollout.yml` | manual | raise / finalize / halt a gradual rollout (needs publishing enabled) |
+| `store-listing.yml` | `store/listing.json` change | push listing text to the Store (needs publishing enabled) |
 
 Distribution outside the Store (GitHub Releases, winget) would need your own code signing
 (e.g. Azure Artifact Signing, from $9.99/month) — not required for Store-only.
