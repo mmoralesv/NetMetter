@@ -17,7 +17,7 @@
     <!-- The UI is English-only; skip the WinForms satellite resource assemblies. -->
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <!-- MAJOR.MINOR.PATCH only: the MSIX package version appends ".0" (the Store owns the 4th field). -->
-    <Version>1.0.1</Version>
+    <Version>1.1.0</Version>
   </PropertyGroup>
 
   <ItemGroup>

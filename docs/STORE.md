@@ -49,7 +49,7 @@ Runtime, because no framework package exists for it. Expect ~55 MB per architect
 - [x] Global exception handling + diagnostic log (`Program.cs`, `AppLog.cs`).
 - [x] Package manifest, generated logos/`.ico`, `build/Package.ps1`.
 - [x] Privacy policy (`docs/PRIVACY.md`).
-- [x] Unit-test project (`tests/NetMetter.Tests`, 37 tests: formatting, rate math, settings, placement).
+- [x] Unit-test project (`tests/NetMetter.Tests`, 56 tests: formatting, rate math, settings, placement).
 - [ ] Fill in the support email and host the privacy policy.
 
 ## Certification

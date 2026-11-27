@@ -40,8 +40,20 @@ internal sealed class MeterWindow : Form
     private bool _dragging;
     private Point _dragStartCursor, _dragStartPosition, _dragPosition;
 
+    private static readonly TimeSpan OverlapCheckInterval = TimeSpan.FromSeconds(5);
+    private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
+    private TimeSpan _lastOverlapCheck;
+    private IntPtr _overlapWindow;
+    private int _overlapStreak;
+
     /// <summary>Raised when the user finishes dragging the meter to a new spot.</summary>
     public event EventHandler? PositionChanged;
+
+    /// <summary>
+    /// Raised with a description of the app that has been covering the meter for long enough that
+    /// re-asserting the z-order has not helped.
+    /// </summary>
+    public event EventHandler<string>? Overlapped;
 
     public MeterWindow(AppSettings settings)
     {
@@ -126,7 +138,19 @@ internal sealed class MeterWindow : Form
         if (IsDisposed)
             return;
 
-        _taskbar = TaskbarInfo.Query();
+        _taskbar = TaskbarInfo.Query(_settings.TaskbarMonitor);
+        if (!Floating && _taskbar is null)
+        {
+            if (Visible)
+                Hide();
+            return;
+        }
+
+        // Lay out first: where the meter lands decides which monitor the checks below apply to.
+        var layout = Floating ? ComputeFloatingLayout() : ComputeTaskbarLayout(_taskbar!);
+        _size = layout.Size;
+        _position = Floating ? FloatingPosition(_size) : TaskbarPosition(_taskbar!, _size);
+
         if (!ShouldBeVisible())
         {
             if (Visible)
@@ -139,11 +163,12 @@ internal sealed class MeterWindow : Form
         if (!Visible)
             Show();
 
-        var layout = Floating ? ComputeFloatingLayout() : ComputeTaskbarLayout(_taskbar!);
-        _size = layout.Size;
-        _position = Floating ? FloatingPosition(_size) : TaskbarPosition(_taskbar!, _size);
         PaintLayered(layout);
 
+        // Check before re-asserting the z-order, not after: this is the state the user has been
+        // looking at for the last second. Raising ourselves first would measure the one moment the
+        // meter is guaranteed to be on top and so would never find anything.
+        CheckForOverlap();
         SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 
         if (_toolTipId is not null)
@@ -154,7 +179,8 @@ internal sealed class MeterWindow : Form
     {
         if (Floating)
         {
-            var monitor = Screen.FromPoint(_position).Bounds;
+            // Whichever monitor the panel actually sits on: it can be dragged to any of them.
+            var monitor = Screen.FromRectangle(new Rectangle(_position, _size)).Bounds;
             return !TaskbarInfo.IsFullscreenAppActive(Handle, monitor);
         }
         return _taskbar is { IsShown: true } tb && !tb.IsFullscreenAppActive(Handle);
@@ -264,29 +290,19 @@ internal sealed class MeterWindow : Form
         int start = tb.IsHorizontal ? tb.Bounds.Left : tb.Bounds.Top;
         int end = tb.IsHorizontal ? tb.Bounds.Right : tb.Bounds.Bottom;
 
-        int along;
-        if (_dragging)
-            along = tb.IsHorizontal ? _dragPosition.X : _dragPosition.Y;
-        else
-            along = _settings.Anchor switch
+        int along = _dragging
+            ? (tb.IsHorizontal ? _dragPosition.X : _dragPosition.Y)
+            : _settings.Anchor switch
             {
                 AnchorSide.Near => start + _settings.AnchorOffset,
                 AnchorSide.Far => end - _settings.AnchorOffset - length,
-                _ => DefaultTaskbarPosition(tb, length),
+                _ => Placement.Default(tb, length),
             };
 
-        along = Math.Clamp(along, start, Math.Max(start, end - length));
+        // Stay off the clock and the Widgets button whatever the position came from, so neither a
+        // drag nor an offset saved on a wider taskbar can park the meter on top of them.
+        along = Placement.Avoid(along, length, Placement.KeepOuts(tb), start, end);
         return tb.IsHorizontal ? new Point(along, tb.Bounds.Top) : new Point(tb.Bounds.Left, along);
-    }
-
-    /// <summary>Just before the notification area, leaving room for the Widgets button if it's there.</summary>
-    internal static int DefaultTaskbarPosition(TaskbarInfo tb, int length)
-    {
-        int margin = (int)(4 * tb.Scale);
-        int limit = tb.NotifyArea is { } n
-            ? (tb.IsHorizontal ? n.Left : n.Top) - tb.ReservedBeforeNotifyArea
-            : (tb.IsHorizontal ? tb.Bounds.Right : tb.Bounds.Bottom) - (int)(200 * tb.Scale);
-        return limit - margin - length;
     }
 
     private Point FloatingPosition(Size size)
@@ -297,10 +313,28 @@ internal sealed class MeterWindow : Form
         if (_settings is { FloatingLeft: { } left, FloatingTop: { } top })
             return ClampToScreen(new Point(left, top), size);
 
-        // Default: above the notification area, clear of the taskbar.
-        var work = Screen.PrimaryScreen!.WorkingArea;
+        // Default: the bottom-right of the chosen monitor's working area, which already excludes
+        // the taskbar and any other app bar docked there.
+        var work = PreferredScreen().WorkingArea;
         int margin = (int)(12 * (DeviceDpi / 96f));
         return new Point(work.Right - size.Width - margin, work.Bottom - size.Height - margin);
+    }
+
+    /// <summary>
+    /// The monitor the user picked, or the primary one. One choice drives both modes, so picking
+    /// the second screen also moves the floating panel there when its position is reset.
+    /// </summary>
+    private Screen PreferredScreen()
+    {
+        if (_settings.TaskbarMonitor is { Length: > 0 } device)
+        {
+            foreach (var screen in Screen.AllScreens)
+            {
+                if (string.Equals(screen.DeviceName, device, StringComparison.OrdinalIgnoreCase))
+                    return screen;
+            }
+        }
+        return Screen.PrimaryScreen!;
     }
 
     private static Point ClampToScreen(Point position, Size size)
@@ -309,6 +343,42 @@ internal sealed class MeterWindow : Form
         return new Point(
             Math.Clamp(position.X, work.Left, Math.Max(work.Left, work.Right - size.Width)),
             Math.Clamp(position.Y, work.Top, Math.Max(work.Top, work.Bottom - size.Height)));
+    }
+
+    // ---------------------------------------------------------------- overlap
+
+    /// <summary>
+    /// Confirms the meter really is the window on screen where we drew it. Something above it
+    /// means the user sees nothing: the z-order is re-asserted straight after this check, which
+    /// settles the common cases on its own. A window that is still there on the next three checks
+    /// has won, and is reported, because a meter that looks broken is worse than a notification.
+    /// </summary>
+    private void CheckForOverlap()
+    {
+        if (_dragging || _clock.Elapsed - _lastOverlapCheck < OverlapCheckInterval)
+            return;
+        _lastOverlapCheck = _clock.Elapsed;
+
+        var covering = Occlusion.Covering(Handle, new Rectangle(_position, _size));
+        if (covering == IntPtr.Zero)
+        {
+            _overlapWindow = IntPtr.Zero;
+            _overlapStreak = 0;
+            return;
+        }
+
+        if (covering != _overlapWindow)
+        {
+            _overlapWindow = covering;
+            _overlapStreak = 1;
+            AppLog.Info($"Meter covered by {Occlusion.Describe(covering)}; re-asserting z-order");
+            return;
+        }
+
+        // Three checks in a row, so a momentary flyout or a window dragged past does not count.
+        // By now the z-order nudge has had its chance and the meter is still hidden.
+        if (++_overlapStreak == 3)
+            Overlapped?.Invoke(this, Occlusion.Describe(covering));
     }
 
     // ---------------------------------------------------------------- painting

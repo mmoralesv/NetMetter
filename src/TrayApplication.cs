@@ -18,17 +18,20 @@ internal sealed class TrayApplication : ApplicationContext
     private readonly PeriodicTimer _timer;
 
     private ToolStripMenuItem _interfacesMenu = null!;
+    private ToolStripMenuItem _monitorMenu = null!;
     private ToolStripMenuItem _startupItem = null!;
     private ToolStripMenuItem _taskbarModeItem = null!;
     private ToolStripMenuItem _floatingModeItem = null!;
     private IReadOnlyList<InterfaceStat> _latest = [];
     private bool _exiting;
+    private bool _overlapWarned;
 
     public TrayApplication(AppSettings settings)
     {
         _settings = settings;
         _meter = new MeterWindow(_settings);
         _meter.PositionChanged += (_, _) => _settings.Save();
+        _meter.Overlapped += OnMeterOverlapped;
 
         _menu = BuildMenu();
         _meter.ContextMenuStrip = _menu;
@@ -47,6 +50,28 @@ internal sealed class TrayApplication : ApplicationContext
 
         SystemEvents.DisplaySettingsChanged += OnSystemChanged;
         SystemEvents.UserPreferenceChanged += OnSystemChanged;
+
+        LogDisplayLayout();
+    }
+
+    /// <summary>
+    /// Records the taskbars on this desktop once at start-up. "It will not show on my second
+    /// monitor" is otherwise unanswerable: the usual cause is that monitor having no taskbar.
+    /// </summary>
+    private void LogDisplayLayout()
+    {
+        try
+        {
+            var taskbars = TaskbarInfo.QueryAll().Select(tb =>
+                $"{tb.MonitorDeviceName} {tb.Bounds.Width}x{tb.Bounds.Height} {tb.Edge}" +
+                (tb.IsPrimary ? " primary" : string.Empty));
+            AppLog.Info($"Displays: {Screen.AllScreens.Length}; taskbars: {string.Join(" | ", taskbars)}; " +
+                        $"meter on {_settings.TaskbarMonitor ?? "primary"} in {_settings.Mode} mode");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Logging the display layout", ex);
+        }
     }
 
     private void OnSystemChanged(object? sender, EventArgs e) => _meter.RefreshSystemState();
@@ -119,6 +144,11 @@ internal sealed class TrayApplication : ApplicationContext
         _floatingModeItem = new ToolStripMenuItem("In a floating window", null, (_, _) => SetMode(DisplayMode.Floating));
         display.DropDownItems.AddRange([_taskbarModeItem, _floatingModeItem]);
 
+        _monitorMenu = new ToolStripMenuItem("Monitor");
+        _monitorMenu.DropDownItems.Add(new ToolStripMenuItem("(loading)") { Enabled = false });
+        // Built on open, so a monitor plugged in since the last look shows up.
+        _monitorMenu.DropDownOpening += (_, _) => PopulateMonitorsMenu();
+
         var showNames = new ToolStripMenuItem("Show interface names") { Checked = _settings.ShowNames, CheckOnClick = true };
         showNames.CheckedChanged += (_, _) =>
         {
@@ -175,6 +205,7 @@ internal sealed class TrayApplication : ApplicationContext
         menu.Items.AddRange([
             _interfacesMenu,
             display,
+            _monitorMenu,
             showNames,
             units,
             interval,
@@ -262,6 +293,81 @@ internal sealed class TrayApplication : ApplicationContext
         {
             AppLog.Error($"Opening {target}", ex);
         }
+    }
+
+    /// <summary>
+    /// Every monitor, with the ones that have no taskbar marked. Taskbar mode needs a taskbar to
+    /// draw on, so those entries are only selectable in floating mode, where the panel is free of
+    /// the taskbar anyway.
+    /// </summary>
+    private void PopulateMonitorsMenu()
+    {
+        _monitorMenu.DropDownItems.Clear();
+
+        var taskbars = TaskbarInfo.QueryAll();
+        _monitorMenu.DropDownItems.Add(new ToolStripMenuItem("Primary monitor (automatic)", null, (_, _) => SetMonitor(null))
+        {
+            Checked = _settings.TaskbarMonitor is null,
+        });
+        _monitorMenu.DropDownItems.Add(new ToolStripSeparator());
+
+        foreach (var screen in Screen.AllScreens)
+        {
+            bool hasTaskbar = taskbars.Any(tb =>
+                string.Equals(tb.MonitorDeviceName, screen.DeviceName, StringComparison.OrdinalIgnoreCase));
+            string device = screen.DeviceName;
+            _monitorMenu.DropDownItems.Add(new ToolStripMenuItem(MonitorLabel(screen, hasTaskbar), null, (_, _) => SetMonitor(device))
+            {
+                Checked = string.Equals(_settings.TaskbarMonitor, device, StringComparison.OrdinalIgnoreCase),
+                Enabled = hasTaskbar || _settings.Mode == DisplayMode.Floating,
+                ToolTipText = hasTaskbar
+                    ? null
+                    : "No taskbar on this monitor. Turn on \"Show my taskbar on all displays\" in Windows settings, or use floating mode.",
+            });
+        }
+    }
+
+    private static string MonitorLabel(Screen screen, bool hasTaskbar)
+    {
+        // \\.\DISPLAY2 reads as "Display 2"; anything unexpected is shown as Windows gave it.
+        string name = screen.DeviceName.StartsWith(@"\\.\DISPLAY", StringComparison.Ordinal)
+            ? "Display " + screen.DeviceName[@"\\.\DISPLAY".Length..]
+            : screen.DeviceName;
+        string label = $"{name} — {screen.Bounds.Width}×{screen.Bounds.Height}";
+        if (screen.Primary)
+            label += " (primary)";
+        return hasTaskbar ? label : label + " — no taskbar";
+    }
+
+    private void SetMonitor(string? device)
+    {
+        if (string.Equals(_settings.TaskbarMonitor, device, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        _settings.TaskbarMonitor = device;
+        // A saved offset or floating position belongs to the monitor it was measured on, so start
+        // the new one from its default spot rather than somewhere off its edge.
+        _settings.Anchor = AnchorSide.Auto;
+        _settings.AnchorOffset = 0;
+        _settings.FloatingLeft = null;
+        _settings.FloatingTop = null;
+        _settings.Save();
+        _meter.Render();
+    }
+
+    /// <summary>
+    /// Another app is sitting on top of the meter and staying there. Say so once per session: the
+    /// meter cannot win a z-order fight it has already lost, and silence looks like a bug.
+    /// </summary>
+    private void OnMeterOverlapped(object? sender, string offender)
+    {
+        if (_overlapWarned)
+            return;
+        _overlapWarned = true;
+        AppLog.Info($"Meter stayed hidden behind {offender}");
+        _notifyIcon.ShowBalloonTip(10_000, "NetMetter is hidden",
+            $"{offender} is drawing over the meter. Drag the meter somewhere else, " +
+            "or switch display mode from the NetMetter tray menu.", ToolTipIcon.Info);
     }
 
     private void PopulateInterfacesMenu()
