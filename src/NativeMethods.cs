@@ -30,6 +30,13 @@ internal static class NativeMethods
 
     public const uint MONITOR_DEFAULTTONEAREST = 0x00000002;
 
+    /// <summary>GetWindow: the sibling one step towards the front of the z-order.</summary>
+    public const uint GW_HWNDPREV = 3;
+
+    /// <summary>DwmGetWindowAttribute: non-zero while DWM is not drawing the window at all.</summary>
+    public const int DWMWA_CLOAKED = 14;
+    public const uint LWA_ALPHA = 0x00000002;
+
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT
     {
@@ -79,12 +86,15 @@ internal static class NativeMethods
         public IntPtr lParam;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    public struct MONITORINFO
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct MONITORINFOEX
     {
         public uint cbSize;
         public RECT rcMonitor, rcWork;
         public uint dwFlags;
+        /// <summary>Display device name, e.g. \.\DISPLAY1.</summary>
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string szDevice;
     }
 
     public delegate void WinEventDelegate(IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
@@ -123,9 +133,26 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     public static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
 
+    [DllImport("user32.dll", EntryPoint = "GetMonitorInfoW", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetMonitorInfoEx(IntPtr hMonitor, ref MONITORINFOEX lpmi);
+
+    /// <summary>Walks the window z-order; used to find out what is covering the meter.</summary>
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
+    public static extern bool GetLayeredWindowAttributes(IntPtr hwnd, out uint crKey, out byte alpha, out uint flags);
+
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out int value, int size);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

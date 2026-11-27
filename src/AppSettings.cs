@@ -42,6 +42,13 @@ internal sealed class AppSettings
     public AnchorSide Anchor { get; set; } = AnchorSide.Auto;
     public int AnchorOffset { get; set; }
 
+    /// <summary>
+    /// Device name of the monitor the meter belongs on, in Windows' own
+    /// <c>\\.\DISPLAYn</c> form; null means the monitor with the primary taskbar. Stored rather
+    /// than an index, because indexes get reshuffled when monitors are plugged in and out.
+    /// </summary>
+    public string? TaskbarMonitor { get; set; }
+
     /// <summary>Top-left of the floating window in screen pixels; null until the user moves it.</summary>
     public int? FloatingLeft { get; set; }
     public int? FloatingTop { get; set; }
