@@ -25,7 +25,7 @@ jobs:
     environment: store-production   # rollout changes affect production; gate them too
     steps:
       - name: Configure Microsoft Store CLI
-        uses: microsoft/microsoft-store-apppublisher@v1.1
+        uses: microsoft/microsoft-store-apppublisher@v1.4
 
       - name: Sign in to Partner Center
         run: >
