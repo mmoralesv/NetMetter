@@ -29,10 +29,10 @@ jobs:
     runs-on: windows-latest
     environment: store-production
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Configure Microsoft Store CLI
-        uses: microsoft/microsoft-store-apppublisher@v1.1
+        uses: microsoft/microsoft-store-apppublisher@v1.4
 
       - name: Sign in to Partner Center
         run: >
